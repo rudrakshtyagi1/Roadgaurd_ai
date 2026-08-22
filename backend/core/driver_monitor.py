@@ -1,18 +1,25 @@
 """
-DriverMonitor — MediaPipe FaceMesh based driver monitoring.
-Compatible with mediapipe 0.10.x (mp.solutions API).
-Falls back to synthetic data if MediaPipe fails.
+DriverMonitor — MediaPipe FaceMesh & PyTorch Driver Drowsiness Perception Pipeline.
+Combines geometric facial landmarks (EAR, MAR, 3D Head Pose) with the trained
+PyTorch CustomDriverCNN model and TemporalDriverBuffer.
 """
-import cv2
-import numpy as np
 import time
 import math
+import cv2
+import numpy as np
+
+try:
+    from core.driver_classifier import DriverClassifier, TemporalDriverBuffer
+except ImportError:
+    from driver_classifier import DriverClassifier, TemporalDriverBuffer
 
 
 class DriverMonitor:
     """
-    Monitors driver state using MediaPipe FaceMesh.
-    Gracefully falls back to synthetic oscillating data if no face/camera available.
+    Monitors driver state using:
+      1. PyTorch CustomDriverCNN for raw deep facial drowsiness probability
+      2. TemporalDriverBuffer for rolling hysteresis & debounced alert state
+      3. MediaPipe FaceMesh for EAR, MAR, and 3D head pose estimation
     """
 
     LEFT_EYE = [33, 160, 158, 133, 153, 144]
@@ -30,8 +37,19 @@ class DriverMonitor:
 
     def __init__(self):
         self._face_mesh = None
-        self._init_failed = False
+        self._mesh_failed = False
 
+        # Initialize PyTorch Drowsiness Classifier & Temporal Buffer
+        try:
+            self.classifier = DriverClassifier()
+            self.temporal_buffer = TemporalDriverBuffer(window_size=15, drowsy_threshold=0.55, consecutive_frames_required=5)
+            print("[DriverMonitor] ✅ PyTorch DriverClassifier & Temporal Buffer initialized")
+        except Exception as e:
+            print(f"[DriverMonitor] ⚠️ DriverClassifier init error: {e}")
+            self.classifier = None
+            self.temporal_buffer = None
+
+        # Initialize MediaPipe FaceMesh
         try:
             import mediapipe as mp
             self._face_mesh = mp.solutions.face_mesh.FaceMesh(
@@ -43,8 +61,8 @@ class DriverMonitor:
             )
             print("[DriverMonitor] ✅ MediaPipe FaceMesh initialized (mp.solutions)")
         except Exception as e:
-            print(f"[DriverMonitor] ⚠️  MediaPipe unavailable: {e} → using synthetic data")
-            self._init_failed = True
+            print(f"[DriverMonitor] ⚠️ MediaPipe unavailable: {e}")
+            self._mesh_failed = True
 
         self.blink_count = 0
         self.is_blinking = False
@@ -86,6 +104,27 @@ class DriverMonitor:
         pitch, yaw, roll = angles.flatten()[:3]
         return float(yaw), float(pitch), float(roll)
 
+    def _extract_face_crop(self, frame: np.ndarray, lm: list, w: int, h: int) -> np.ndarray:
+        """Extract padded square face crop from landmarks for the CNN classifier."""
+        xs = [int(p[0] * w) for p in lm]
+        ys = [int(p[1] * h) for p in lm]
+        min_x, max_x = max(0, min(xs)), min(w, max(xs))
+        min_y, max_y = max(0, min(ys)), min(h, max(ys))
+
+        box_w = max_x - min_x
+        box_h = max_y - min_y
+        pad = int(max(box_w, box_h) * 0.15)
+
+        x1 = max(0, min_x - pad)
+        y1 = max(0, min_y - pad)
+        x2 = min(w, max_x + pad)
+        y2 = min(h, max_y + pad)
+
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0 or crop.shape[0] < 10 or crop.shape[1] < 10:
+            return frame
+        return crop
+
     # ── synthetic fallback ────────────────────────────────────────────────────
 
     def _synthetic(self) -> dict:
@@ -100,6 +139,9 @@ class DriverMonitor:
         blink = math.sin(t * 3.5) > 0.97
         if blink:
             self.blink_count += 1
+
+        prob = 0.15 + 0.7 * max(0.0, math.sin(t * 0.3))
+
         return {
             "ear": round(ear, 4),
             "mar": round(mar, 4),
@@ -109,58 +151,102 @@ class DriverMonitor:
             "blink_count": self.blink_count,
             "avg_blink_duration_ms": 145.0,
             "face_detected": True,
+            "drowsy_probability": round(prob, 4),
+            "smoothed_fatigue": round(prob, 4),
+            "state": "DROWSY" if prob > 0.65 else ("LOW_VIGILANCE" if prob > 0.4 else "ALERT"),
+            "latency_ms": 3.1,
+            "is_mock": True
         }
 
     # ── main API ──────────────────────────────────────────────────────────────
 
     def process(self, frame: np.ndarray) -> dict:
-        """Process a BGR video frame and return driver state dict."""
-        if self._init_failed or self._face_mesh is None:
+        """
+        Process a BGR video frame from live camera.
+        Returns unified dictionary with deep CNN prediction, temporal buffer state, and geometric landmarks.
+        """
+        if frame is None or frame.size == 0:
             return self._synthetic()
 
-        default = {
+        t_start = time.perf_counter()
+        h, w = frame.shape[:2]
+
+        default_result = {
             "ear": 0.3, "mar": 0.1,
             "head_pose": {"yaw": 0.0, "pitch": 0.0, "roll": 0.0},
             "eye_state": "OPEN", "blink_detected": False,
             "blink_count": self.blink_count,
             "avg_blink_duration_ms": self.avg_blink_duration_ms,
             "face_detected": False,
+            "drowsy_probability": 0.0,
+            "smoothed_fatigue": 0.0,
+            "state": "ALERT",
+            "latency_ms": 0.0,
+            "is_mock": False
         }
 
         try:
-            h, w = frame.shape[:2]
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self._face_mesh.process(rgb)
-
-            if not results.multi_face_landmarks:
-                return default
-
-            raw = results.multi_face_landmarks[0].landmark
-            lm = [(l.x, l.y) for l in raw]
-
-            ear = (self._ear(lm, self.LEFT_EYE) + self._ear(lm, self.RIGHT_EYE)) / 2.0
-            mar = self._mar(lm)
-            yaw, pitch, roll = self._head_pose(lm, w, h)
-
-            eye_state = "CLOSED" if ear <= 0.15 else ("CLOSING" if ear <= 0.25 else "OPEN")
-
+            face_detected = False
+            ear = 0.3
+            mar = 0.1
+            yaw, pitch, roll = 0.0, 0.0, 0.0
+            eye_state = "OPEN"
             blink_detected = False
-            if ear < 0.25:
-                if not self.is_blinking:
-                    self.is_blinking = True
-                    self.blink_start_time = time.time()
-            else:
-                if self.is_blinking:
-                    self.is_blinking = False
-                    blink_detected = True
-                    self.blink_count += 1
-                    dur = (time.time() - self.blink_start_time) * 1000.0
-                    self.blink_durations.append(dur)
-                    if len(self.blink_durations) > 20:
-                        self.blink_durations.pop(0)
-                    self.avg_blink_duration_ms = sum(self.blink_durations) / len(self.blink_durations)
+            face_crop = frame
 
-            return {
+            # 1. MediaPipe Geometric Landmarks
+            if self._face_mesh is not None:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = self._face_mesh.process(rgb)
+
+                if results.multi_face_landmarks:
+                    face_detected = True
+                    raw = results.multi_face_landmarks[0].landmark
+                    lm = [(l.x, l.y) for l in raw]
+
+                    ear = (self._ear(lm, self.LEFT_EYE) + self._ear(lm, self.RIGHT_EYE)) / 2.0
+                    mar = self._mar(lm)
+                    yaw, pitch, roll = self._head_pose(lm, w, h)
+                    eye_state = "CLOSED" if ear <= 0.15 else ("CLOSING" if ear <= 0.25 else "OPEN")
+
+                    # Blink logic
+                    if ear < 0.25:
+                        if not self.is_blinking:
+                            self.is_blinking = True
+                            self.blink_start_time = time.time()
+                    else:
+                        if self.is_blinking:
+                            self.is_blinking = False
+                            blink_detected = True
+                            self.blink_count += 1
+                            dur = (time.time() - self.blink_start_time) * 1000.0
+                            self.blink_durations.append(dur)
+                            if len(self.blink_durations) > 20:
+                                self.blink_durations.pop(0)
+                            self.avg_blink_duration_ms = sum(self.blink_durations) / len(self.blink_durations)
+
+                    # Extract face crop for CNN
+                    face_crop = self._extract_face_crop(frame, lm, w, h)
+
+            # 2. PyTorch CustomDriverCNN Drowsiness Inference
+            drowsy_prob = 0.0
+            smoothed_fatigue = 0.0
+            driver_state_label = "ALERT"
+
+            if self.classifier is not None:
+                # If face not detected by mediapipe, still run on center crop/frame
+                drowsy_prob = self.classifier.predict_proba(face_crop)
+                if self.temporal_buffer is not None:
+                    buf_stat = self.temporal_buffer.push(drowsy_prob)
+                    smoothed_fatigue = buf_stat["smoothed_fatigue"]
+                    driver_state_label = buf_stat["state"]
+                else:
+                    smoothed_fatigue = drowsy_prob
+                    driver_state_label = "DROWSY" if drowsy_prob >= 0.65 else ("LOW_VIGILANCE" if drowsy_prob >= 0.40 else "ALERT")
+
+            latency_ms = (time.perf_counter() - t_start) * 1000.0
+
+            res = {
                 "ear": round(ear, 4),
                 "mar": round(mar, 4),
                 "head_pose": {"yaw": round(yaw, 2), "pitch": round(pitch, 2), "roll": round(roll, 2)},
@@ -168,9 +254,17 @@ class DriverMonitor:
                 "blink_detected": blink_detected,
                 "blink_count": self.blink_count,
                 "avg_blink_duration_ms": round(self.avg_blink_duration_ms, 1),
-                "face_detected": True,
+                "face_detected": face_detected,
+                "drowsy_probability": round(drowsy_prob, 4),
+                "smoothed_fatigue": round(smoothed_fatigue, 4),
+                "state": driver_state_label,
+                "latency_ms": round(latency_ms, 2),
+                "is_mock": False
             }
+            self.latest_state = res
+            self.latest_timestamp = time.time()
+            return res
 
         except Exception as e:
             print(f"[DriverMonitor] process() error: {e}")
-            return default
+            return default_result

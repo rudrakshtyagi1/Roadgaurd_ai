@@ -19,6 +19,11 @@ export interface DriverState {
   eye_state: EyeState;
   blink_rate: number;
   face_detected: boolean;
+  drowsy_probability?: number;
+  smoothed_fatigue?: number;
+  state?: string;
+  latency_ms?: number;
+  is_mock?: boolean;
 }
 
 export interface Pothole {
@@ -42,6 +47,9 @@ export interface RoadState {
   nearest_distance_m: number;
   pothole_detected: boolean;
   pothole_confidence: number;
+  relative_proximity?: string;
+  frame_data?: string;
+  is_mock?: boolean;
 }
 
 export interface RiskComponents {

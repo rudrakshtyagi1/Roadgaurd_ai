@@ -1,3 +1,4 @@
+import time
 import cv2
 import numpy as np
 from fastapi import APIRouter, UploadFile, Request
@@ -15,6 +16,8 @@ async def process_driver(request: Request, frame: UploadFile):
         return JSONResponse(status_code=400, content={"error": "Invalid image"})
         
     state = request.app.state.driver_monitor.process(img)
+    request.app.state.latest_driver_state = state
+    request.app.state.latest_driver_timestamp = time.time()
     return JSONResponse(content=state)
 
 @router.post('/road')

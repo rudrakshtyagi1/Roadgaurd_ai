@@ -11,7 +11,7 @@ from core.alert_engine import AlertEngine
 from ws.stream import ConnectionManager
 
 class InferenceLoop:
-    """Background inference loop."""
+    """Background inference loop integrating live pothole model processing."""
     
     def __init__(self, manager: ConnectionManager):
         self.manager = manager
@@ -23,10 +23,10 @@ class InferenceLoop:
         self.sim_start = time.time()
         
     def generate_synthetic_data(self):
-        """Generates realistic varying synthetic data."""
+        """Generates realistic varying synthetic data for the Driver Monitor branch."""
         t = time.time() - self.sim_start
         
-        # Driver state oscillating
+        # Driver state oscillating (mock/prototype indicator)
         ear = 0.25 + 0.1 * math.sin(t * 0.5)
         mar = 0.1 + 0.2 * abs(math.cos(t * 0.3))
         yaw = 10 * math.sin(t)
@@ -43,41 +43,56 @@ class InferenceLoop:
             "face_detected": True
         }
         
-        # Road state
-        pothole = math.sin(t) > 0.8
-        hazard = 50.0 if pothole else 10.0
-        
-        road_state = {
-            "vehicles": max(0, int(3 + 2 * math.sin(t * 0.2))),
-            "detections": [],
-            "pothole_detected": pothole,
-            "pothole_confidence": 0.85 if pothole else 0.0,
-            "hazard_score": hazard,
-            "nearest_distance_m": max(5.0, 20.0 + 15 * math.sin(t * 0.8))
-        }
-        
-        return driver_state, road_state
+        return driver_state
 
     async def run(self):
-        driver_cap = cv2.VideoCapture(0)
-        road_cap = cv2.VideoCapture(1)
-        if not road_cap.isOpened():
-            road_cap = cv2.VideoCapture(0)
-            
+        video_path = '/Users/rudrakshtyagi/Desktop/roadgaurdai/potholes/sample_video.mp4'
+        print(f"[InferenceLoop] Loading road feed from local video: {video_path}")
+        road_cap = cv2.VideoCapture(video_path)
+        
         fps_buffer = []
         
         while True:
             start_t = time.perf_counter()
             try:
-                driver_success, d_frame = driver_cap.read() if driver_cap.isOpened() else (False, None)
+                # 1. Driver monitoring: use live camera frames if posted recently, otherwise fallback to synthetic data
+                latest_driver = getattr(self.driver_monitor, "latest_state", None)
+                latest_driver_t = getattr(self.driver_monitor, "latest_timestamp", 0.0)
+
+                if latest_driver is not None and (time.time() - latest_driver_t) < 3.0:
+                    driver_state = latest_driver
+                    is_driver_live = True
+                else:
+                    driver_state = self.generate_synthetic_data()
+                    is_driver_live = False
+                
+                # 2. Road monitoring runs real-time inference on the test video
                 road_success, r_frame = road_cap.read() if road_cap.isOpened() else (False, None)
                 
-                if driver_success and road_success:
-                    driver_state = self.driver_monitor.process(d_frame)
+                # Automatic loop reset when video ends
+                if not road_success or r_frame is None:
+                    if road_cap.isOpened():
+                        road_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        road_success, r_frame = road_cap.read()
+                        
+                if road_success and r_frame is not None:
+                    # Run actual pothole detector model
                     road_state = self.road_monitor.process(r_frame)
                 else:
-                    driver_state, road_state = self.generate_synthetic_data()
+                    # Fail-safe empty road state if video cannot load
+                    road_state = {
+                        "vehicles": 0,
+                        "detections": [],
+                        "pothole_detected": False,
+                        "pothole_confidence": 0.0,
+                        "hazard_score": 0.0,
+                        "nearest_distance_m": 100.0,
+                        "relative_proximity": "FAR",
+                        "potholes": [],
+                        "frame_data": ""
+                    }
                     
+                # Push data to temporal buffer for stats
                 self.temporal_buffer.push({
                     "ear": driver_state.get("ear"),
                     "mar": driver_state.get("mar"),
@@ -88,8 +103,13 @@ class InferenceLoop:
                 })
                 
                 stats = self.temporal_buffer.get_stats()
+                
+                # Compute risk engine components
                 risk = self.risk_engine.compute(driver_state, road_state, stats)
-                alert = self.alert_engine.generate_alert(risk)
+                
+                # Handle alert logs (potholes + overall risk alerts)
+                self.alert_engine.generate_alert(risk)
+                self.alert_engine.generate_road_alert(road_state)
                 
                 end_t = time.perf_counter()
                 latency = (end_t - start_t) * 1000
@@ -99,7 +119,7 @@ class InferenceLoop:
                     fps_buffer.pop(0)
                 avg_fps = sum(fps_buffer) / len(fps_buffer)
                 
-                # Derive attention level from head pose + EAR
+                # Derive attention level for mock driver
                 yaw = driver_state.get("head_pose", {}).get("yaw", 0.0)
                 ear_val = driver_state.get("ear", 0.3)
                 if abs(yaw) > 25 or ear_val < 0.15:
@@ -111,17 +131,9 @@ class InferenceLoop:
                 else:
                     attention = "HIGH"
 
-                # Derive fatigue 0.0-1.0 from components
-                comps = risk.get("components", {})
-                fatigue_norm = min(1.0, comps.get("fatigue_score", 0) / 100.0)
+                fatigue_norm = min(1.0, risk.get("components", {}).get("fatigue_score", 0) / 100.0)
 
-                # Build potholes list
-                potholes = []
-                if road_state.get("pothole_detected"):
-                    conf = road_state.get("pothole_confidence", 0.5)
-                    sev = "HIGH" if conf > 0.75 else ("MEDIUM" if conf > 0.5 else "LOW")
-                    potholes = [{"confidence": conf, "severity": sev, "distance_m": road_state.get("nearest_distance_m", 25.0)}]
-
+                # Broadcast WS message
                 msg = {
                     "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "driver": {
@@ -133,21 +145,29 @@ class InferenceLoop:
                         "eye_state": driver_state.get("eye_state", "OPEN"),
                         "blink_rate": stats.get("blink_rate", 0),
                         "face_detected": driver_state.get("face_detected", True),
+                        "drowsy_probability": driver_state.get("drowsy_probability", 0.0),
+                        "smoothed_fatigue": driver_state.get("smoothed_fatigue", 0.0),
+                        "state": driver_state.get("state", "ALERT"),
+                        "latency_ms": driver_state.get("latency_ms", 3.1),
+                        "is_mock": not is_driver_live
                     },
                     "road": {
-                        "potholes": potholes,
+                        "potholes": road_state.get("potholes", []),
                         "vehicles": road_state.get("vehicles", 0),
                         "hazard_score": road_state.get("hazard_score", 0.0),
                         "detections": road_state.get("detections", []),
                         "nearest_distance_m": road_state.get("nearest_distance_m", 100.0),
                         "pothole_detected": road_state.get("pothole_detected", False),
                         "pothole_confidence": road_state.get("pothole_confidence", 0.0),
+                        "relative_proximity": road_state.get("relative_proximity", "FAR"),
+                        "frame_data": road_state.get("frame_data", ""),
+                        "is_mock": False
                     },
                     "risk_data": risk,
                     "metrics": {
                         "fps": round(avg_fps, 1),
                         "latency_ms": round(latency, 1),
-                        "driver_connected": driver_cap.isOpened(),
+                        "driver_connected": True,
                         "road_connected": road_cap.isOpened(),
                     },
                     "events": self.alert_engine.get_recent_events(10),

@@ -1,8 +1,26 @@
+# Dependencies
 node_modules/
 venv/
+.venv/
+
+# Python cache & artifacts
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# OS & Environment
 .DS_Store
 .env
+*.local
+
+# Datasets & Heavy media
+Driver Drowsiness Dataset (DDD)/
+drowsiness_processed/
+potholes/
+*.pt
+*.pth
+scratch/
 models/
 backend/models/
