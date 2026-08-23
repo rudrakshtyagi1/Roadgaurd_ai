@@ -1,0 +1,49 @@
+# RoadGuard AI — Road Hazard Intelligence Configuration (Phase 3)
+
+# Pothole & Road Hazard Detector
+detector:
+  confidence_threshold: 0.25
+  model_path: "/Users/rudrakshtyagi/Desktop/roadgaurdai/potholes/runs/pothole_yolov8n_v1/weights/best.pt"
+  target_classes: [0] # 0: pothole (expandable to speed breaker, debris, manhole)
+
+# Hazard Tracker
+tracker:
+  iou_threshold: 0.20
+  spatial_distance_threshold: 0.15 # Max normalized distance to associate across frames
+  max_missing_frames: 8           # ~260ms before track becomes LOST
+  min_hits_to_confirm: 2          # Frames needed to confirm real road hazard
+  max_track_history_ms: 3000.0
+
+# Perspective Ego-Corridor (Relevance Evaluation)
+ego_corridor:
+  horizon_y: 0.45
+  bottom_y: 1.00
+  top_half_width: 0.08
+  bottom_half_width: 0.28
+  center_x: 0.50
+  in_path_threshold: 0.70
+  near_path_threshold: 0.30
+
+# Hazard Severity Estimator
+severity:
+  area_severe_threshold: 0.040     # > 4% of frame area -> SEVERE
+  area_high_threshold: 0.020       # > 2% of frame area -> HIGH
+  area_medium_threshold: 0.008     # > 0.8% of frame area -> MEDIUM
+  expansion_rate_severe: 0.05      # High approaching rate
+  min_confidence_high_severity: 0.45
+
+# Hazard Risk Engine & Weights
+weights:
+  ego_path: 0.40
+  severity: 0.35
+  approach_motion: 0.15
+  proximity_scale: 0.10
+
+# State Machine & Hysteresis
+state_machine:
+  caution_score_threshold: 0.35
+  warning_score_threshold: 0.60
+  critical_score_threshold: 0.80
+  cooldown_critical_to_warning_ms: 1200.0
+  cooldown_warning_to_caution_ms: 1800.0
+  cooldown_caution_to_safe_ms: 2200.0

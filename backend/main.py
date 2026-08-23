@@ -9,10 +9,12 @@ from core.road_monitor import RoadMonitor
 from core.temporal_buffer import TemporalBuffer
 from core.risk_engine import RiskEngine
 from core.alert_engine import AlertEngine
+from core.network.hazard_database import HazardDatabase
+from core.network.safer_routing import SaferRouteEngine
 from ws.stream import ConnectionManager
 from ws.inference_loop import InferenceLoop
 
-from routers import video, inference, risk, events
+from routers import video, inference, risk, events, hazards, map
 
 app = FastAPI(title='RoadGuard AI', version='0.1.0')
 
@@ -28,6 +30,8 @@ app.include_router(video.router)
 app.include_router(inference.router)
 app.include_router(risk.router)
 app.include_router(events.router)
+app.include_router(hazards.router)
+app.include_router(map.router)
 
 manager = ConnectionManager()
 loop_task = None
@@ -39,6 +43,8 @@ async def startup_event():
     app.state.temporal_buffer = TemporalBuffer()
     app.state.risk_engine = RiskEngine()
     app.state.alert_engine = AlertEngine()
+    app.state.hazard_db = HazardDatabase()
+    app.state.safer_route_engine = SaferRouteEngine(app.state.hazard_db)
     app.state.risk_history = deque(maxlen=60)
     
     inference_loop = InferenceLoop(manager)

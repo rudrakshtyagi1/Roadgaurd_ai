@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+frontend/dist/
 venv/
 .venv/
 
@@ -24,3 +25,5 @@ potholes/
 scratch/
 models/
 backend/models/
+*.log
+backend/logs/

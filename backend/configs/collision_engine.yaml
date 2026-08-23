@@ -1,0 +1,65 @@
+# RoadGuard AI — Collision Intelligence Engine Configuration (Phase 2.5 Hardened)
+
+# Object Detector Thresholds
+detector:
+  confidence_threshold: 0.35
+  target_classes: [0, 1, 2, 3, 5, 7] # person, bicycle, car, motorcycle, bus, truck
+  model_path: "yolov8n.pt"
+
+# Multi-Object Tracker Thresholds
+tracker:
+  iou_threshold: 0.30
+  max_missing_frames: 10          # ~330ms at 30fps before track goes from DEGRADED to LOST
+  min_hits_to_track: 3            # hits needed to transition NEW -> TRACKED
+  max_track_history_ms: 3000.0    # 3.0s max history per track
+  history_prune_interval_ms: 1000.0
+
+# Perspective Ego-Corridor (Normalized Image Coordinates [0.0 - 1.0])
+ego_corridor:
+  horizon_y: 0.45                 # Vanishing point height
+  bottom_y: 1.00                  # Bottom of image
+  top_half_width: 0.06            # Half-width at horizon
+  bottom_half_width: 0.26         # Half-width at bottom of image
+  center_x: 0.50                  # Ego path center line
+  in_path_threshold: 0.70         # Relevance >= 0.70 -> IN_PATH
+  near_path_threshold: 0.30       # Relevance >= 0.30 -> NEAR_PATH
+
+# Relative Motion Estimation
+motion:
+  window_ms: 800.0                # Rolling window for scale slope
+  min_samples: 5                  # Min observations required for motion slope
+  approaching_slope_threshold: 0.04 # Positive scale growth rate per second
+  receding_slope_threshold: -0.04  # Negative scale growth rate per second
+  smoothing_alpha: 0.30           # EMA alpha for scale change
+
+# Time-To-Collision (TTC) Estimator
+ttc:
+  scale_signal_mode: "fused"      # "fused", "sqrt_area", "bbox_height", "bbox_area"
+  min_track_age_ms: 500.0         # Min tracking duration before calculating TTC
+  min_samples: 8                  # Min samples for regression TTC
+  rolling_window_ms: 600.0        # Rolling window for instantaneous TTC derivative
+  min_r_squared: 0.50             # Linear fit correlation quality
+  min_valid_ttc_s: 0.2            # Minimum physically meaningful TTC
+  max_valid_ttc_s: 10.0           # Max horizon for TTC calculation
+  caution_ttc_s: 4.5              # TTC <= 4.5s -> CAUTION zone
+  warning_ttc_s: 2.8              # TTC <= 2.8s -> WARNING zone
+  critical_ttc_s: 1.6             # TTC <= 1.6s -> CRITICAL zone
+
+# Risk Scoring Weights (sum = 1.0)
+weights:
+  ego_path: 0.35
+  ttc: 0.35
+  closing_motion: 0.15
+  proximity_scale: 0.10
+  object_vulnerability: 0.05
+
+# Collision State Machine & Hysteresis
+state_machine:
+  caution_score_threshold: 0.45
+  warning_score_threshold: 0.65
+  critical_score_threshold: 0.85
+  
+  # De-escalation cooldowns (milliseconds)
+  cooldown_critical_to_warning_ms: 1500.0
+  cooldown_warning_to_caution_ms: 2000.0
+  cooldown_caution_to_safe_ms: 2500.0

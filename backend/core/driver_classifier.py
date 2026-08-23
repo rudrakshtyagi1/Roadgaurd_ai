@@ -1,8 +1,10 @@
 """
 RoadGuard AI — Driver Drowsiness Classifier & Temporal Buffer Suite
 Provides production inference for trained PyTorch driver drowsiness model
-with zero-leakage subject generalization and temporal smoothing buffer.
+with explicit class mapping metadata, input validation, and temporal smoothing buffer.
 """
+
+from __future__ import annotations
 
 import time
 from collections import deque
@@ -69,16 +71,24 @@ class CustomDriverCNN(nn.Module):
 class DriverClassifier:
     """
     Inference adapter for the PyTorch Driver Drowsiness Model.
-    Loads trained weights, processes raw BGR/RGB image inputs, and computes calibrated drowsiness probability.
+    Loads trained weights, processes raw BGR/RGB image inputs, and computes
+    explicitly mapped drowsiness probability with class metadata.
     """
     DEFAULT_WEIGHTS_PATH = Path("/Users/rudrakshtyagi/Desktop/roadgaurdai/models/drowsiness/best_driver_model.pt")
+
+    # Explicit class mapping ground truth
+    CLASS_TO_IDX = {"non_drowsy": 0, "drowsy": 1}
+    IDX_TO_CLASS = {0: "NON_DROWSY", 1: "DROWSY"}
 
     def __init__(
         self,
         model_path: Optional[Union[str, Path]] = None,
-        device: Optional[str] = None
+        device: Optional[str] = None,
+        class_to_idx: Optional[Dict[str, int]] = None,
     ):
         self.model_path = Path(model_path) if model_path else self.DEFAULT_WEIGHTS_PATH
+        self.class_to_idx = class_to_idx or self.CLASS_TO_IDX
+        self.idx_to_class = {v: k.upper() for k, v in self.class_to_idx.items()}
         
         # Select device: MPS -> CUDA -> CPU
         if device:
@@ -112,25 +122,22 @@ class DriverClassifier:
         checkpoint = torch.load(self.model_path, map_location=self.device)
         if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["state_dict"])
+            if "class_to_idx" in checkpoint:
+                self.class_to_idx = checkpoint["class_to_idx"]
+                self.idx_to_class = {v: k.upper() for k, v in self.class_to_idx.items()}
         elif isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["model_state_dict"])
+            if "class_to_idx" in checkpoint:
+                self.class_to_idx = checkpoint["class_to_idx"]
+                self.idx_to_class = {v: k.upper() for k, v in self.class_to_idx.items()}
         elif isinstance(checkpoint, dict):
             self.model.load_state_dict(checkpoint)
         else:
             self.model = checkpoint
 
-    def predict_proba(self, image: Union[np.ndarray, Image.Image]) -> float:
-        """
-        Computes raw probability P(Drowsy) = sigmoid(logit) for a single input frame / face crop.
-        
-        Args:
-            image: numpy ndarray (BGR or RGB) or PIL Image.
-            
-        Returns:
-            float probability between 0.0 (Alert) and 1.0 (Drowsy).
-        """
+    def _preprocess(self, image: Union[np.ndarray, Image.Image]) -> torch.Tensor:
+        """Converts BGR numpy image or PIL Image to normalized PyTorch tensor (1, 3, 224, 224)."""
         if isinstance(image, np.ndarray):
-            # Assume BGR if OpenCV format, convert to RGB
             if len(image.shape) == 3 and image.shape[2] == 3:
                 rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             else:
@@ -139,36 +146,88 @@ class DriverClassifier:
         else:
             pil_img = image
 
-        tensor = self.transform(pil_img).unsqueeze(0).to(self.device)
+        return self.transform(pil_img).unsqueeze(0).to(self.device)
+
+    def predict_proba(self, image: Union[np.ndarray, Image.Image]) -> float:
+        """
+        Computes raw probability P(Drowsy) for a single input frame / face crop.
+        
+        Returns:
+            float probability between 0.0 (Alert / Non-Drowsy) and 1.0 (Drowsy).
+        """
+        tensor = self._preprocess(image)
 
         with torch.no_grad():
             logit = self.model(tensor)
-            prob = torch.sigmoid(logit).item()
+            # Binary sigmoid probability for class 1 ("drowsy")
+            prob_raw = torch.sigmoid(logit).item()
 
-        return float(prob)
+        drowsy_idx = self.class_to_idx.get("drowsy", 1)
+        if drowsy_idx == 1:
+            p_drowsy = prob_raw
+        else:
+            # If drowsy was mapped to index 0, then sigmoid(logit) is P(class 1) = P(non-drowsy)
+            p_drowsy = 1.0 - prob_raw
+
+        return float(max(0.0, min(1.0, p_drowsy)))
 
     def predict(
         self,
         image: Union[np.ndarray, Image.Image],
-        threshold: float = 0.50
+        threshold: float = 0.50,
+        return_debug: bool = False
     ) -> Dict[str, Any]:
         """
-        Runs single-frame inference and returns structured prediction results with latency.
+        Runs single-frame inference and returns structured prediction results with latency
+        and explicit class semantics.
         """
         t0 = time.perf_counter()
-        prob = self.predict_proba(image)
+        tensor = self._preprocess(image)
+
+        with torch.no_grad():
+            logit_val = self.model(tensor).item()
+            prob_raw = torch.sigmoid(torch.tensor(logit_val)).item()
+
+        drowsy_idx = self.class_to_idx.get("drowsy", 1)
+        if drowsy_idx == 1:
+            p_drowsy = prob_raw
+            p_non_drowsy = 1.0 - prob_raw
+        else:
+            p_drowsy = 1.0 - prob_raw
+            p_non_drowsy = prob_raw
+
         latency_ms = (time.perf_counter() - t0) * 1000.0
+        is_drowsy = p_drowsy >= threshold
+        pred_class = "DROWSY" if is_drowsy else "NON_DROWSY"
+        pred_prob = p_drowsy if is_drowsy else p_non_drowsy
 
-        is_drowsy = prob >= threshold
-        label = "DROWSY" if is_drowsy else "NON_DROWSY"
-
-        return {
-            "drowsy_probability": round(prob, 4),
+        out = {
+            "cnn_drowsy_probability": round(p_drowsy, 4),
+            "cnn_predicted_class": pred_class,
+            "cnn_predicted_class_probability": round(pred_prob, 4),
+            # Backward-compatible fields
+            "drowsy_probability": round(p_drowsy, 4),
             "is_drowsy": is_drowsy,
-            "label": label,
-            "confidence": round(prob if is_drowsy else (1.0 - prob), 4),
+            "label": pred_class,
+            "confidence": round(pred_prob, 4),
             "latency_ms": round(latency_ms, 2)
         }
+
+        if return_debug:
+            out["cnn_debug"] = {
+                "class_to_idx": self.class_to_idx,
+                "raw_logit": round(logit_val, 4),
+                "probabilities": {
+                    "drowsy": round(p_drowsy, 4),
+                    "non_drowsy": round(p_non_drowsy, 4),
+                },
+                "tensor_shape": list(tensor.shape),
+                "tensor_min": round(float(tensor.min()), 4),
+                "tensor_max": round(float(tensor.max()), 4),
+                "tensor_mean": round(float(tensor.mean()), 4),
+            }
+
+        return out
 
 
 class TemporalDriverBuffer:
@@ -194,12 +253,6 @@ class TemporalDriverBuffer:
     def push(self, prob: float) -> Dict[str, Any]:
         """
         Pushes a new frame drowsiness probability into the buffer and returns smoothed temporal stats.
-        
-        Args:
-            prob: P(Drowsy) for current frame [0.0 - 1.0].
-            
-        Returns:
-            Dictionary containing smoothed fatigue index, state label, and temporal metrics.
         """
         self.history.append(prob)
 
@@ -233,21 +286,3 @@ class TemporalDriverBuffer:
         self.history.clear()
         self.consecutive_drowsy_count = 0
         self.current_state = "ALERT"
-
-
-if __name__ == "__main__":
-    print("Testing DriverClassifier & TemporalDriverBuffer self-check...")
-    classifier = DriverClassifier()
-    print(f"DriverClassifier initialized on device: {classifier.device}")
-
-    # Create dummy 227x227 image
-    dummy_frame = (np.random.rand(227, 227, 3) * 255).astype(np.uint8)
-    pred = classifier.predict(dummy_frame)
-    print(f"Single frame prediction on dummy input: {pred}")
-
-    buffer = TemporalDriverBuffer(window_size=15)
-    for i, p in enumerate([0.2, 0.3, 0.45, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95]):
-        stat = buffer.push(p)
-        print(f"  Step {i+1}: prob={p:.2f} -> smoothed={stat['smoothed_fatigue']:.3f}, state={stat['state']}")
-
-    print("Self-test passed! ✅")

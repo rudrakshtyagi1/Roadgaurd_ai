@@ -44,6 +44,14 @@ export function DiagnosticsView({ data, connected, reconnecting }: Props) {
           <h4 className="text-slate-400 font-bold border-b border-slate-700 pb-1">DRIVER TELEMETRY</h4>
           <div className="space-y-2">
             <div className="flex justify-between">
+              <span>Driver State:</span>
+              <span className="text-white font-bold">{driver.state || (driver.eye_state === 'CLOSED' ? 'DROWSY' : 'NORMAL')}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>CNN Drowsy Signal:</span>
+              <span className="text-white font-bold">{((driver.cnn_drowsy_probability ?? driver.drowsy_probability ?? 0.0) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between">
               <span>Eye Aspect Ratio (EAR):</span>
               <span className="text-white font-bold">{driver.ear.toFixed(4)}</span>
             </div>
@@ -59,6 +67,26 @@ export function DiagnosticsView({ data, connected, reconnecting }: Props) {
               <span>Blink Rate:</span>
               <span className="text-white">{driver.blink_rate} bpm</span>
             </div>
+            <div className="flex justify-between">
+              <span>Recent Long Blinks (30s):</span>
+              <span className="text-white font-bold">{driver.recent_signals?.long_blinks_30s ?? 0}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Active Yawn:</span>
+              <span className={driver.active_signals?.active_yawn ? 'text-amber-400 font-bold' : 'text-slate-400'}>
+                {driver.active_signals?.active_yawn ? 'YES' : 'NO'}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span>Wakefulness Support:</span>
+              <span className="text-emerald-400 font-bold">{((driver.wakefulness_support ?? 1.0) * 100).toFixed(0)}%</span>
+            </div>
+            {driver.signal_disagreement && (
+              <div className="flex justify-between text-amber-400 font-semibold bg-amber-500/10 p-1 rounded">
+                <span>Signal Disagreement:</span>
+                <span>DETECTED</span>
+              </div>
+            )}
             
             <div className="pt-2">
               <span className="text-slate-500 block mb-1">Head Pose Vector (Euler):</span>

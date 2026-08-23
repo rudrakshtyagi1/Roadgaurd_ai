@@ -1,0 +1,84 @@
+# RoadGuard AI — Driver State Engine V2.0 Configuration
+
+# Temporal Windows (milliseconds)
+windows:
+  perclos_window_ms: 30000.0       # Rolling window for PERCLOS evaluation (30s)
+  blink_history_window_ms: 60000.0 # Rolling window for blink rate calculation (60s)
+  quality_window_ms: 10000.0       # Window to evaluate signal quality (10s)
+  min_valid_history_ms: 5000.0     # Minimum observed face history before PERCLOS is marked reliable
+  max_sample_dt_ms: 500.0          # Max dt clamp between consecutive frames
+
+# Temporal Evidence Lifecycle & Expiration (milliseconds)
+evidence:
+  long_blink_history_window_ms: 30000.0   # Window after which a long blink completely expires (30s)
+  long_blink_strong_window_ms: 6000.0     # Window where a long blink retains strong weight (6s)
+  yawn_history_window_ms: 45000.0         # Window after which a completed yawn expires (45s)
+  yawn_strong_window_ms: 8000.0           # Window where a recent yawn retains strong weight (8s)
+  head_nod_history_window_ms: 10000.0     # Window for head-nodding decay (10s)
+  
+  moderate_cnn_threshold: 0.50            # CNN probability above this is considered moderate
+  strong_cnn_threshold: 0.80              # CNN probability above this is considered strong
+  cnn_confirmation_window_ms: 1500.0      # Sustained duration required for strong CNN escalation
+
+  wakefulness_ear_min: 0.28               # EAR >= this indicates active awake eyelid aperture
+  wakefulness_perclos_max: 0.08           # PERCLOS <= this indicates awake baseline
+
+# Eye & Blink Thresholds
+eye:
+  ear_close_threshold: 0.20        # EAR below this starts eye closure
+  ear_reopen_threshold: 0.25       # EAR above this confirms eye reopened (hysteresis)
+  normal_blink_min_ms: 80.0        # Minimum duration for valid physiological blink
+  normal_blink_max_ms: 400.0       # Maximum duration for normal blink
+  long_blink_min_ms: 500.0         # Threshold to classify as long blink / microsleep
+  prolonged_closure_critical_ms: 1500.0 # Eye closed >= this fires CRITICAL override immediately
+  prolonged_closure_warning_ms: 800.0   # Eye closed >= this contributes to high fatigue
+
+# Yawn Thresholds
+yawn:
+  yawn_start_mar: 0.55             # MAR above this starts yawn state
+  yawn_end_mar: 0.38               # MAR below this ends yawn (hysteresis)
+  min_yawn_duration_ms: 1000.0     # Minimum duration to count as completed yawn
+  sustained_yawn_ms: 2000.0        # Ongoing yawn duration >= this triggers active yawn warning
+
+# Head Pose Thresholds (degrees)
+# Convention: Yaw (left +, right -), Pitch (up +, down -), Roll (tilt left +, tilt right -)
+head_pose:
+  inattention_yaw_deg: 25.0        # Looking away horizontally threshold
+  inattention_pitch_up_deg: 20.0   # Looking up
+  nodding_pitch_down_deg: -18.0    # Head dropping downward (fatigue sign)
+  head_turn_duration_warning_ms: 2000.0 # Sustained head turn triggering inattention
+  nodding_duration_warning_ms: 1500.0   # Sustained downward pitch triggering fatigue
+
+# Signal Quality Thresholds
+quality:
+  tracked_ratio_threshold: 0.70    # >= 70% valid face in window -> TRACKED
+  degraded_ratio_threshold: 0.30   # 30-70% valid face -> DEGRADED, < 30% -> LOST
+  max_consecutive_dropouts_ms: 2000.0 # Time with no face before marking tracking LOST
+
+# Risk Engine Fusion Weights (sum = 1.0)
+weights:
+  perclos: 0.35
+  cnn_drowsy: 0.25
+  long_blinks: 0.15
+  yawn_persistence: 0.10
+  eye_closure: 0.10
+  head_nodding: 0.05
+
+# State Escalation & Hysteresis Thresholds (Fatigue Risk Score 0.0 - 1.0)
+state_machine:
+  fatigue_risk_threshold: 0.35     # Score >= 0.35 -> FATIGUE_RISK
+  drowsy_threshold: 0.60           # Score >= 0.60 -> DROWSY
+  critical_score_threshold: 0.85   # Score >= 0.85 -> CRITICAL (if not already triggered by override)
+  
+  # De-escalation hold times (milliseconds of continuous lower risk before demoting state)
+  cooldown_critical_to_drowsy_ms: 2000.0
+  cooldown_drowsy_to_fatigue_ms: 3000.0
+  cooldown_fatigue_to_normal_ms: 3000.0
+
+# Wakefulness & State Recovery (milliseconds)
+recovery:
+  reopen_confirmation_ms: 400.0        # Open-eye duration to confirm reopen & clear critical override
+  drowsy_recovery_ms: 2000.0          # Sustained open duration to permit DROWSY -> FATIGUE_RISK demotion
+  normal_recovery_ms: 4000.0          # Sustained open duration to permit FATIGUE_RISK -> NORMAL demotion
+  strong_open_ear_margin: 0.05        # EAR margin above ear_reopen_threshold for strong wakefulness support
+

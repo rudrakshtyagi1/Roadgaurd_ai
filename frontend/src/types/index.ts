@@ -19,9 +19,30 @@ export interface DriverState {
   eye_state: EyeState;
   blink_rate: number;
   face_detected: boolean;
+  cnn_drowsy_probability?: number;
+  cnn_predicted_class?: string;
+  cnn_predicted_class_probability?: number;
   drowsy_probability?: number;
   smoothed_fatigue?: number;
   state?: string;
+  reason_codes?: string[];
+  fatigue_risk_score?: number;
+  signal_strength?: number;
+  tracking_state?: string;
+  wakefulness_support?: number;
+  signal_disagreement?: boolean;
+  active_signals?: {
+    eyes_closed?: boolean;
+    active_yawn?: boolean;
+    head_drop?: boolean;
+  };
+  recent_signals?: {
+    long_blinks_30s?: number;
+    yawns_60s?: number;
+    effective_long_blink_weight?: number;
+    effective_yawn_weight?: number;
+  };
+  driver_state_v2?: any;
   latency_ms?: number;
   is_mock?: boolean;
 }

@@ -5,14 +5,35 @@ import { DiagnosticsView } from './components/DiagnosticsView';
 
 interface LiveDriverInference {
   drowsy_probability: number;
+  cnn_drowsy_probability?: number;
+  cnn_predicted_class?: string;
+  cnn_predicted_class_probability?: number;
   smoothed_fatigue: number;
-  state: 'ALERT' | 'LOW_VIGILANCE' | 'DROWSY';
+  state: 'NORMAL' | 'FATIGUE_RISK' | 'DROWSY' | 'CRITICAL' | 'ALERT' | 'LOW_VIGILANCE';
   ear: number;
   mar: number;
   eye_state: 'OPEN' | 'CLOSING' | 'CLOSED';
   blink_count: number;
   avg_blink_duration_ms: number;
   face_detected: boolean;
+  reason_codes?: string[];
+  fatigue_risk_score?: number;
+  signal_strength?: number;
+  tracking_state?: string;
+  wakefulness_support?: number;
+  signal_disagreement?: boolean;
+  active_signals?: {
+    eyes_closed?: boolean;
+    active_yawn?: boolean;
+    head_drop?: boolean;
+  };
+  recent_signals?: {
+    long_blinks_30s?: number;
+    yawns_60s?: number;
+    effective_long_blink_weight?: number;
+    effective_yawn_weight?: number;
+  };
+  driver_state_v2?: any;
   latency_ms: number;
   is_mock?: boolean;
 }
@@ -187,18 +208,23 @@ function App() {
   let driverColor = 'text-slate-400';
 
   if (isDriverLive) {
-    if (driverState === 'DROWSY') {
+    const reasons = liveDriverState.reason_codes ? ` • ${liveDriverState.reason_codes.slice(0, 2).join(', ')}` : '';
+    if (driverState === 'CRITICAL') {
+      driverTitle = '🚨 CRITICAL FATIGUE';
+      driverColor = 'text-red-400 font-bold animate-pulse';
+      driverSubtext = `Closure ${(liveDriverState.driver_state_v2?.metrics?.eye_closure_duration_ms || 0)}ms${reasons}`;
+    } else if (driverState === 'DROWSY') {
       driverTitle = 'DROWSINESS DETECTED';
       driverColor = 'text-red-400';
-      driverSubtext = `Prob ${(driverProb * 100).toFixed(0)}% • Smoothed ${(driverSmoothed * 100).toFixed(0)}% • ${liveDriverState.eye_state}`;
-    } else if (driverState === 'LOW_VIGILANCE') {
-      driverTitle = 'LOW VIGILANCE';
+      driverSubtext = `Fatigue ${(driverSmoothed * 100).toFixed(0)}% • ${liveDriverState.eye_state}${reasons}`;
+    } else if (driverState === 'FATIGUE_RISK' || driverState === 'LOW_VIGILANCE') {
+      driverTitle = 'FATIGUE RISK';
       driverColor = 'text-amber-400';
-      driverSubtext = `Prob ${(driverProb * 100).toFixed(0)}% • EAR ${liveDriverState.ear.toFixed(2)}`;
+      driverSubtext = `Fatigue ${(driverSmoothed * 100).toFixed(0)}% • EAR ${liveDriverState.ear.toFixed(2)}${reasons}`;
     } else {
       driverTitle = 'ALERT & ATTENTIVE';
       driverColor = 'text-emerald-400';
-      driverSubtext = `P(Drowsy) ${(driverProb * 100).toFixed(0)}% • EAR ${liveDriverState.ear.toFixed(2)}`;
+      driverSubtext = `EAR ${liveDriverState.ear.toFixed(2)} • Blinks ${liveDriverState.blink_count || 0}`;
     }
   }
 
@@ -216,8 +242,9 @@ function App() {
 
   let driverRiskContribution = 0;
   if (isDriverLive) {
-    if (driverState === 'DROWSY') driverRiskContribution = 60;
-    else if (driverState === 'LOW_VIGILANCE') driverRiskContribution = 30;
+    if (driverState === 'CRITICAL') driverRiskContribution = 100;
+    else if (driverState === 'DROWSY') driverRiskContribution = 70;
+    else if (driverState === 'FATIGUE_RISK' || driverState === 'LOW_VIGILANCE') driverRiskContribution = 35;
     else driverRiskContribution = Math.round(driverSmoothed * 25);
   }
 
@@ -389,43 +416,71 @@ function App() {
                 <div className="absolute top-3 left-3 flex items-center space-x-2">
                   <span
                     className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider uppercase border shadow-md ${
-                      driverState === 'DROWSY'
-                        ? 'bg-red-950/90 border-red-500 text-red-200 animate-pulse'
-                        : driverState === 'LOW_VIGILANCE'
+                      driverState === 'CRITICAL'
+                        ? 'bg-red-950/95 border-red-500 text-red-100 font-extrabold animate-pulse'
+                        : driverState === 'DROWSY'
+                        ? 'bg-red-950/90 border-red-500 text-red-200'
+                        : driverState === 'FATIGUE_RISK' || driverState === 'LOW_VIGILANCE'
                         ? 'bg-amber-950/90 border-amber-500 text-amber-200'
                         : 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
                     }`}
                   >
-                    {driverState === 'DROWSY' ? '🔴 DROWSY' : driverState === 'LOW_VIGILANCE' ? '🟡 LOW VIGILANCE' : '🟢 ALERT'}
+                    {driverState === 'CRITICAL'
+                      ? '🚨 CRITICAL'
+                      : driverState === 'DROWSY'
+                      ? '🔴 DROWSY'
+                      : driverState === 'FATIGUE_RISK' || driverState === 'LOW_VIGILANCE'
+                      ? '🟡 FATIGUE RISK'
+                      : '🟢 NORMAL'}
                   </span>
                 </div>
 
                 {/* Bottom Telemetry Bar */}
-                <div className="absolute bottom-3 left-3 right-3 bg-[#07090e]/85 backdrop-blur-sm border border-slate-800/80 rounded p-2 text-[10px] space-y-1.5 shadow-xl">
-                  <div className="flex justify-between text-slate-400">
-                    <span>P(Drowsy):</span>
-                    <span className="text-white font-bold">{(driverProb * 100).toFixed(1)}%</span>
+                <div className="absolute bottom-2 left-2 right-2 bg-[#07090e]/95 backdrop-blur-md border border-slate-800/80 rounded p-2 text-[10px] space-y-1.5 shadow-xl">
+                  <div className="flex justify-between items-center text-slate-400">
+                    <div className="flex items-center space-x-1.5">
+                      <span className="font-semibold text-slate-300">FATIGUE RISK:</span>
+                      <span className="text-white font-bold text-xs">{((liveDriverState?.fatigue_risk_score ?? driverSmoothed) * 100).toFixed(0)}%</span>
+                    </div>
+                    {liveDriverState?.signal_disagreement && (
+                      <span className="px-1.5 py-0.2 text-[8px] bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded font-semibold animate-pulse">
+                        DISAGREEMENT
+                      </span>
+                    )}
                   </div>
-                  {/* Probability Bar */}
+                  {/* Fatigue Risk Bar */}
                   <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
                     <div
                       className={`h-full transition-all duration-200 ${
-                        driverProb > 0.65 ? 'bg-red-500' : driverProb > 0.4 ? 'bg-amber-500' : 'bg-emerald-500'
+                        (liveDriverState?.fatigue_risk_score ?? driverSmoothed) > 0.65
+                          ? 'bg-red-500'
+                          : (liveDriverState?.fatigue_risk_score ?? driverSmoothed) > 0.35
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
                       }`}
-                      style={{ width: `${Math.min(100, Math.max(2, driverProb * 100))}%` }}
+                      style={{ width: `${Math.min(100, Math.max(2, (liveDriverState?.fatigue_risk_score ?? driverSmoothed) * 100))}%` }}
                     />
                   </div>
 
-                  <div className="flex justify-between text-[9px] text-slate-400 pt-0.5">
-                    <span>
-                      Smoothed: <strong className="text-slate-200">{(driverSmoothed * 100).toFixed(0)}%</strong>
-                    </span>
-                    <span>
-                      Eye: <strong className="text-slate-200">{liveDriverState?.eye_state || 'OPEN'}</strong>
-                    </span>
-                    <span>
-                      Latency: <strong className="text-slate-200">{liveDriverState?.latency_ms.toFixed(0) || '3'}ms</strong>
-                    </span>
+                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px] text-slate-400 pt-1 border-t border-slate-800/60">
+                    <div>
+                      CNN Drowsy: <strong className="text-slate-200">{((liveDriverState?.cnn_drowsy_probability ?? driverProb) * 100).toFixed(1)}%</strong>
+                    </div>
+                    <div className="text-right">
+                      Eye: <strong className="text-slate-200">{liveDriverState?.eye_state || 'OPEN'}</strong> (EAR {liveDriverState?.ear.toFixed(2) || '0.30'})
+                    </div>
+                    <div>
+                      PERCLOS: <strong className="text-slate-200">{((liveDriverState?.driver_state_v2?.metrics?.perclos ?? 0) * 100).toFixed(1)}%</strong>
+                    </div>
+                    <div className="text-right">
+                      Recent Blinks: <strong className="text-slate-200">{liveDriverState?.recent_signals?.long_blinks_30s ?? 0}</strong>
+                    </div>
+                    <div>
+                      Active Yawn: <strong className="text-slate-200">{liveDriverState?.active_signals?.active_yawn ? 'YES' : 'NO'}</strong>
+                    </div>
+                    <div className="text-right">
+                      Tracking: <strong className="text-slate-200">{liveDriverState?.tracking_state || (liveDriverState?.face_detected ? 'TRACKED' : 'LOST')}</strong>
+                    </div>
                   </div>
                 </div>
               </>
