@@ -7,7 +7,7 @@ interface UseWebSocketReturn {
   reconnecting: boolean;
 }
 
-const WS_URL = 'ws://localhost:8000/ws';
+const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
 const MAX_RETRIES = 5;
 
 export function useWebSocket(): UseWebSocketReturn {

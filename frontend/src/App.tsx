@@ -38,6 +38,9 @@ interface LiveDriverInference {
   is_mock?: boolean;
 }
 
+const API_URL =
+  import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 function App() {
   const [useMock, setUseMock] = useState(false);
   const [showDiagnostics, setShowDiagnostics] = useState(false);
@@ -123,7 +126,7 @@ function App() {
             formData.append('frame', blob, 'driver_frame.jpg');
 
             try {
-              const res = await fetch('http://localhost:8000/api/video/driver', {
+              const res = await fetch(`${API_URL}/api/video/driver`, {
                 method: 'POST',
                 body: formData,
               });
@@ -509,7 +512,7 @@ function App() {
             ) : (
               <div className="text-center p-8 space-y-2">
                 <div className="text-xs tracking-widest text-slate-500 uppercase">Awaiting Road Inference Stream...</div>
-                <div className="text-[10px] text-slate-600">Verify backend process is active on localhost:8000</div>
+                <div className="text-[10px] text-slate-600">Verify backend inference service is online</div>
               </div>
             )}
 
