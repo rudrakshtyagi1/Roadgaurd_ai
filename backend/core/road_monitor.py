@@ -7,7 +7,7 @@ from ultralytics import YOLO
 class RoadMonitor:
     """YOLO-based road monitoring with trained pothole detector integration."""
     
-    def __init__(self, model_path='/Users/rudrakshtyagi/Desktop/roadgaurdai/potholes/runs/pothole_yolov8n_v1/weights/best.pt'):
+    def __init__(self, model_path="model_assets/best_pothole.pt"):
         # Check device support
         if torch.backends.mps.is_available():
             self.device = 'mps'
