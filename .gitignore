@@ -27,3 +27,8 @@ models/
 backend/models/
 *.log
 backend/logs/
+
+# Allow deployment models
+!backend/model_assets/
+!backend/model_assets/*.pt
+!backend/model_assets/*.task
