@@ -39,7 +39,7 @@ interface LiveDriverInference {
 }
 
 const API_URL =
-  import.meta.env.VITE_API_URL || 'http://localhost:8000';
+  import.meta.env.VITE_API_URL?.replace(/\/$/, '') || (import.meta.env.DEV ? 'http://localhost:8000' : '');
 
 function App() {
   const [useMock, setUseMock] = useState(false);
@@ -60,6 +60,10 @@ function App() {
   // ── Start / Stop Driver Camera ─────────────────────────────────────────────
   const startCamera = async () => {
     setCameraError(null);
+    if (!API_URL) {
+      setCameraError('Live camera inference requires a configured Python backend.');
+      return;
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -157,9 +161,21 @@ function App() {
   if (!current.data) {
     return (
       <div className="min-h-screen bg-[#07090e] text-slate-300 flex items-center justify-center font-mono">
-        <div className="text-center space-y-3">
+        <div className="text-center space-y-4 max-w-lg px-6" role="status">
           <div className="w-3 h-3 rounded-full bg-emerald-500 animate-ping mx-auto" />
-          <div className="text-xs uppercase tracking-widest text-slate-400">Connecting to Perception Stream...</div>
+          <h1 className="text-lg text-white">RoadGuard AI</h1>
+          <div className="text-xs uppercase tracking-widest text-slate-400">
+            {ws.error ? 'Live perception unavailable' : 'Connecting to perception stream…'}
+          </div>
+          <p className="text-sm text-slate-400">
+            {ws.error || 'Waiting for the Python backend. A sleeping server may take a moment to start.'}
+          </p>
+          {ws.reconnecting && <p className="text-xs text-slate-500">Automatic reconnect is active.</p>}
+          <div className="flex justify-center gap-3">
+            <button onClick={ws.retry} className="rounded border border-slate-600 px-4 py-2 text-sm">Retry connection</button>
+            <button onClick={() => setUseMock(true)} className="rounded border border-amber-600 px-4 py-2 text-sm text-amber-300">Open demo</button>
+          </div>
+          <p className="text-xs text-slate-500">Demo mode uses simulated data, without live road monitoring.</p>
         </div>
       </div>
     );
@@ -295,6 +311,14 @@ function App() {
 
   return (
     <div className="min-h-screen bg-[#07090e] text-[#cbd5e1] font-mono flex flex-col justify-between p-6 max-w-[1500px] mx-auto selection:bg-slate-800">
+      {useMock ? (
+        <div role="status" className="mb-4 rounded border border-amber-700 p-3 text-sm text-amber-300">DEMO MODE — Simulated road telemetry. These readings are not live detections.</div>
+      ) : !ws.connected && (
+        <div role="alert" className="mb-4 rounded border border-red-700 p-3 text-sm text-red-300">
+          Stream disconnected — displayed telemetry is stale. {ws.error}
+          <button onClick={ws.retry} className="ml-3 underline">Retry connection</button>
+        </div>
+      )}
       {/* Hidden processing canvas */}
       <canvas ref={canvasRef} className="hidden" />
 
@@ -328,7 +352,7 @@ function App() {
             className="flex items-center space-x-2 bg-[#0e1320] hover:bg-[#151c2e] px-3 py-1.5 rounded border border-slate-800 transition-colors text-xs"
           >
             <div className={`w-2 h-2 rounded-full ${useMock ? 'bg-amber-500' : 'bg-emerald-400 animate-pulse'}`} />
-            <span className="text-slate-300 font-bold tracking-wider">{useMock ? 'MOCK' : 'LIVE'}</span>
+            <span className="text-slate-300 font-bold tracking-wider">{useMock ? 'DEMO' : ws.connected ? 'LIVE' : 'OFFLINE'}</span>
           </button>
         </div>
       </header>
